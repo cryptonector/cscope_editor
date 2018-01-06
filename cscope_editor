@@ -1,0 +1,69 @@
+#!/bin/ksh
+
+# Makes for safer scripting
+set -o noglob
+OIFS="$IFS"
+IFS=
+PATH=/usr/bin:/bin:$PATH
+
+# This script is to be used as the value of $CSCOPE_EDITOR for cscope in
+# a screen(1) or tmux(1) session.  Selecting a file to edit should then
+# cause a new window to open with the user's preferred editor running in
+# it to edit the selected file, all the while the script exits so that
+# control can return to cscope.  This way the user can start many
+# concurrent edits from one cscope session.
+
+export EDITOR=${EDITOR:-vim}
+
+editor=$EDITOR
+roeditor=${ROEDITOR:-view}
+
+# Not in screen or tmux?  Punt.  (If in both... well, we pick screen.)
+[[ -z "$STY" && -z "$TMUX" ]] && {
+    exec "$editor" "$@"
+    printf 'Failed to exec $EDITOR (%s)' "$EDITOR" 1>&2
+    exit 1
+}
+
+# I often edit/view the same file from cscope in the same screen/tmux
+# session.  I don't want to be prompted by VIM on the second, third, ..,
+# nth viewing.  This code decides whether to edit the file read-only.
+use_roeditor=false
+if [[ $EDITOR = vim ]]; then
+    files=0
+    for arg in "$@"; do
+	[[ "$arg" = -* || "$arg" = [+]* ]] && continue
+	((files++))
+	[[ "$arg" = */* && -f "${arg%/*}/.${arg##*/}.swp" ]] && use_roeditor=true
+	[[ "$arg" != */* && -f ".${arg}.swp" ]] && use_roeditor=true
+	# cscope doesn't have us edit more than one file at a time
+	((files > 1)) && use_roeditor=false
+    done
+fi
+
+$use_roeditor && editor=$roeditor
+
+# Figure out the title for the new screen(1)/tmux(1) window
+for arg in "$@"; do
+	[[ "$arg" = -* || "$arg" = [+]* ]] && continue
+	title="${SVIM_TITLE_PREFIX}${arg##*/}"
+	break
+done
+
+# Start $EDITOR in a new window if we're in a session.
+#
+# Note that screen/tmux in this mode will use IPC to ask the master
+# session process to start the new window, then the client screen/tmux
+# process will exit, and since we exec it, we exit too.
+if [[ -n "$STY" && $# -gt 0 ]]; then
+    exec screen -h 1 -t "$title" "$editor" -X "$@"
+elif [[ -n "$TMUX" && $# -gt 0 ]]; then
+    IFS=' '
+    exec tmux new-window -n "$title" "$editor -X $*"
+fi
+
+# Fallbacks (no screen, ultimately just vi).  But we don't exit in this
+# case.
+exec $editor "$@"
+printf 'Failed to exec $EDITOR (%s)' "$EDITOR" 1>&2
+exit 1
